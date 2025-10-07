@@ -65,12 +65,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 import gepa  # noqa: E402
 from gepa.adapters.generic_rag_adapter import GenericRAGAdapter, RAGDataInst  # noqa: E402
+from gepa.adapters.generic_rag_adapter.vector_store_interface import VectorStoreInterface  # noqa: E402
 
 # Vector store imports (lazy loaded)
-_vector_stores = {}
+_vector_stores: dict[str, type[VectorStoreInterface]] = {}
 
 
-def lazy_import_vector_store(store_name: str):
+def lazy_import_vector_store(store_name: str) -> type[VectorStoreInterface]:
     """Lazy import vector store classes to avoid dependency issues."""
     global _vector_stores
 

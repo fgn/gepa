@@ -117,7 +117,7 @@ class ChromaVectorStore(VectorStoreInterface):
 
     def _format_results(self, results) -> list[dict[str, Any]]:
         """Convert ChromaDB results to standardized format."""
-        documents = []
+        documents: list[dict[str, Any]] = []
 
         if not results["documents"] or not results["documents"][0]:
             return documents

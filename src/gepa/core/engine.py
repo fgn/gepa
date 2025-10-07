@@ -74,8 +74,10 @@ class GEPAEngine(Generic[DataInst, Trajectory, RolloutOutput]):
         self.raise_on_exception = raise_on_exception
 
     def _val_evaluator(self) -> Callable[[dict[str, str]], tuple[list[RolloutOutput], list[float]]]:
-        assert self.valset is not None
-        return lambda prog: self.evaluator(self.valset, prog)
+        if self.valset is None:
+            raise ValueError("valset must be provided to build the validation evaluator")
+        valset: list[DataInst] = self.valset
+        return lambda prog: self.evaluator(valset, prog)
 
     def _get_pareto_front_programs(self, state: GEPAState) -> list:
         return state.program_at_pareto_front_valset
@@ -121,29 +123,33 @@ class GEPAEngine(Generic[DataInst, Trajectory, RolloutOutput]):
 
     def run(self) -> GEPAState:
         # Check tqdm availability if progress bar is enabled
-        progress_bar = None
+        progress_bar: Any | None = None
+        last_pbar_val = 0
         if self.display_progress_bar:
             if tqdm is None:
                 raise ImportError("tqdm must be installed when display_progress_bar is enabled")
 
             # Check if stop_callback contains MaxMetricCallsStopper
-            total_calls = None
-            if hasattr(self.stop_callback, "max_metric_calls"):
-                # Direct MaxMetricCallsStopper
-                total_calls = self.stop_callback.max_metric_calls
-            elif hasattr(self.stop_callback, "stoppers"):
-                # CompositeStopper - iterate to find MaxMetricCallsStopper
-                for stopper in self.stop_callback.stoppers:
-                    if hasattr(stopper, "max_metric_calls"):
-                        total_calls = stopper.max_metric_calls
-                        break
+            total_calls: int | None = None
+            stop_callback = self.stop_callback
+            if stop_callback is not None:
+                max_calls = getattr(stop_callback, "max_metric_calls", None)
+                if isinstance(max_calls, int):
+                    total_calls = max_calls
+                else:
+                    stoppers = getattr(stop_callback, "stoppers", None)
+                    if stoppers is not None:
+                        for stopper in stoppers:
+                            stopper_max_calls = getattr(stopper, "max_metric_calls", None)
+                            if isinstance(stopper_max_calls, int):
+                                total_calls = stopper_max_calls
+                                break
 
             if total_calls is not None:
                 progress_bar = tqdm(total=total_calls, desc="GEPA Optimization", unit="rollouts")
             else:
                 progress_bar = tqdm(desc="GEPA Optimization", unit="rollouts")
             progress_bar.update(0)
-            last_pbar_val = 0
 
         # Prepare valset
         if self.valset is None:
@@ -179,7 +185,7 @@ class GEPAEngine(Generic[DataInst, Trajectory, RolloutOutput]):
 
         # Main loop
         while not self._should_stop(state):
-            if self.display_progress_bar:
+            if progress_bar is not None:
                 delta = state.total_num_evals - last_pbar_val
                 progress_bar.update(delta)
                 last_pbar_val = state.total_num_evals
@@ -259,7 +265,7 @@ class GEPAEngine(Generic[DataInst, Trajectory, RolloutOutput]):
                     continue
 
         # Close progress bar if it exists
-        if self.display_progress_bar:
+        if progress_bar is not None:
             progress_bar.close()
 
         state.save(self.run_dir)

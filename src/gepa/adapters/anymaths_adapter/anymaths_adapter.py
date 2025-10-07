@@ -1,4 +1,4 @@
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 import litellm
 from pydantic import BaseModel, Field
@@ -67,7 +67,7 @@ class AnyMathsAdapter(GEPAAdapter[AnyMathsDataInst, AnyMathsTrajectory, AnyMaths
 
         outputs: list[AnyMathsRolloutOutput] = []
         scores: list[float] = []
-        trajectories: list[AnyMathsTrajectory] | None = [] if capture_traces else None
+        trajectories: list[AnyMathsTrajectory] = []
 
         if not candidate:
             raise ValueError("Candidate must contain at least one component text.")
@@ -113,10 +113,10 @@ class AnyMathsAdapter(GEPAAdapter[AnyMathsDataInst, AnyMathsTrajectory, AnyMaths
             if correct_output_format:
                 structured_assistant_response = f"Assistant's Solution: {assistant_response['solution_pad']}\n"
                 structured_assistant_response += f"Final Answer: {assistant_response['final_answer']}"
-                output = {"full_assistant_response": structured_assistant_response}
+                output = cast(AnyMathsRolloutOutput, {"full_assistant_response": structured_assistant_response})
                 score = 1.0 if data["answer"] in assistant_response["final_answer"] else self.failure_score
             else:
-                output = {"full_assistant_response": assistant_response}
+                output = cast(AnyMathsRolloutOutput, {"full_assistant_response": assistant_response})
                 score = self.failure_score
 
             outputs.append(output)
@@ -125,7 +125,11 @@ class AnyMathsAdapter(GEPAAdapter[AnyMathsDataInst, AnyMathsTrajectory, AnyMaths
             if capture_traces:
                 trajectories.append({"data": data, "full_assistant_response": output["full_assistant_response"]})
         # Return results for the entire batch (not just the first item)
-        return EvaluationBatch(outputs=outputs, scores=scores, trajectories=trajectories)
+        return EvaluationBatch(
+            outputs=outputs,
+            scores=scores,
+            trajectories=trajectories if capture_traces else None,
+        )
 
     def make_reflective_dataset(
         self,
@@ -138,8 +142,12 @@ class AnyMathsAdapter(GEPAAdapter[AnyMathsDataInst, AnyMathsTrajectory, AnyMaths
         assert len(components_to_update) == 1
         comp = components_to_update[0]
 
+        trajectories = eval_batch.trajectories
+        if trajectories is None:
+            raise ValueError("Reflective dataset requires trajectories; call evaluate with capture_traces=True.")
+
         items: list[dict[str, Any]] = []
-        trace_instances = list(zip(eval_batch.trajectories, eval_batch.scores, eval_batch.outputs, strict=False))
+        trace_instances = list(zip(trajectories, eval_batch.scores, eval_batch.outputs, strict=False))
 
         for trace_instance in trace_instances:
             traj, score, _ = trace_instance

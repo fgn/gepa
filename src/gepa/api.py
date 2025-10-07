@@ -3,7 +3,7 @@
 
 import os
 import random
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from gepa.adapters.default_adapter.default_adapter import DefaultAdapter
 from gepa.core.adapter import DataInst, GEPAAdapter, RolloutOutput, Trajectory
@@ -133,15 +133,18 @@ def optimize(
     # Reproducibility
     - seed: The seed to use for the random number generator.
     """
+    resolved_adapter: GEPAAdapter[DataInst, Trajectory, RolloutOutput]
     if adapter is None:
         assert task_lm is not None, (
             "Since no adapter is provided, GEPA requires a task LM to be provided. Please set the `task_lm` parameter."
         )
-        adapter = DefaultAdapter(model=task_lm)
+        # DefaultAdapter satisfies the GEPAAdapter protocol but uses its own concrete type aliases.
+        resolved_adapter = cast(GEPAAdapter[DataInst, Trajectory, RolloutOutput], DefaultAdapter(model=task_lm))
     else:
         assert task_lm is None, (
             "Since an adapter is provided, GEPA does not require a task LM to be provided. Please set the `task_lm` parameter to None."
         )
+        resolved_adapter = adapter
 
     # Comprehensive stop_callback logic
     # Convert stop_callbacks to a list if it's not already
@@ -179,9 +182,9 @@ def optimize(
 
         stop_callback = CompositeStopper(*stop_callbacks_list)
 
-    if not hasattr(adapter, "propose_new_texts"):
+    if not hasattr(resolved_adapter, "propose_new_texts"):
         assert reflection_lm is not None, (
-            f"reflection_lm was not provided. The adapter used '{adapter!s}' does not provide a propose_new_texts method, "
+            f"reflection_lm was not provided. The adapter used '{resolved_adapter!s}' does not provide a propose_new_texts method, "
             + "and hence, GEPA will use the default proposer, which requires a reflection_lm to be specified."
         )
 
@@ -232,7 +235,7 @@ def optimize(
     reflective_proposer = ReflectiveMutationProposer(
         logger=logger,
         trainset=trainset,
-        adapter=adapter,
+        adapter=resolved_adapter,
         candidate_selector=candidate_selector,
         module_selector=module_selector,
         batch_sampler=batch_sampler,
@@ -243,7 +246,7 @@ def optimize(
     )
 
     def evaluator(inputs, prog):
-        eval_out = adapter.evaluate(inputs, prog, capture_traces=False)
+        eval_out = resolved_adapter.evaluate(inputs, prog, capture_traces=False)
         return eval_out.outputs, eval_out.scores
 
     merge_proposer = None
@@ -257,7 +260,7 @@ def optimize(
             rng=rng,
         )
 
-    engine = GEPAEngine(
+    engine: GEPAEngine[DataInst, Trajectory, RolloutOutput] = GEPAEngine(
         run_dir=run_dir,
         evaluator=evaluator,
         valset=valset,

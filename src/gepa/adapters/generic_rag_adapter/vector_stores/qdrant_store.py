@@ -105,14 +105,13 @@ class QdrantVectorStore(VectorStoreInterface):
 
         # Generate IDs if not provided - use integers for Qdrant compatibility
         if ids is None:
-            ids = list(range(len(documents)))
             string_ids = [f"doc_{i}" for i in range(len(documents))]
         else:
             if len(ids) != len(documents):
                 raise ValueError("Number of IDs must match number of documents")
-            # Convert string IDs to integers for Qdrant, but keep original strings in payload
             string_ids = ids
-            ids = list(range(len(documents)))
+
+        numeric_ids = list(range(len(documents)))
 
         # Create Qdrant points
         points = []
@@ -122,7 +121,7 @@ class QdrantVectorStore(VectorStoreInterface):
             payload["original_id"] = string_ids[i]
 
             point = self.models.PointStruct(
-                id=ids[i],  # Use integer ID for Qdrant
+                id=numeric_ids[i],  # Use integer ID for Qdrant
                 vector=embedding,
                 payload=payload,
             )
@@ -226,7 +225,7 @@ class QdrantVectorStore(VectorStoreInterface):
 
     def _format_results(self, results) -> list[dict[str, Any]]:
         """Convert Qdrant results to standardized format."""
-        documents = []
+        documents: list[dict[str, Any]] = []
 
         # Handle both direct points list and QueryResponse
         points = results.points if hasattr(results, "points") else results

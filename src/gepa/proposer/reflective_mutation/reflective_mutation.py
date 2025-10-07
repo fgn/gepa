@@ -61,12 +61,16 @@ class ReflectiveMutationProposer(ProposeNewCandidate):
 
         from gepa.strategies.instruction_proposal import InstructionProposalSignature
 
+        if self.reflection_lm is None:
+            raise ValueError("reflection_lm must be provided when using the default instruction proposal pipeline.")
+        lm: LanguageModel = self.reflection_lm
+
         new_texts: dict[str, str] = {}
         for name in components_to_update:
             base_instruction = candidate[name]
             dataset_with_feedback = reflective_dataset[name]
             new_texts[name] = InstructionProposalSignature.run(
-                lm=self.reflection_lm,
+                lm=lm,
                 input_dict={
                     "current_instruction_doc": base_instruction,
                     "dataset_with_feedback": dataset_with_feedback,

@@ -48,7 +48,7 @@ class GEPAResult(Generic[RolloutOutput]):
     discovery_eval_counts: list[int]
 
     # Optional data
-    best_outputs_valset: list[list[tuple[int, list[RolloutOutput]]]] | None = None
+    best_outputs_valset: list[list[tuple[int, RolloutOutput]]] | None = None
 
     # Run metadata (optional)
     total_metric_calls: int | None = None

@@ -37,11 +37,10 @@ class RAGPipeline:
         self.vector_store = vector_store
         self.llm_client = llm_client
         self.embedding_model = embedding_model
-        self.embedding_function = embedding_function
-
-        # Initialize default embedding function if none provided
-        if self.embedding_function is None:
-            self.embedding_function = self._default_embedding_function
+        if embedding_function is None:
+            self.embedding_function: Callable[[str], list[float]] = self._default_embedding_function
+        else:
+            self.embedding_function = embedding_function
 
     def execute_rag(
         self,

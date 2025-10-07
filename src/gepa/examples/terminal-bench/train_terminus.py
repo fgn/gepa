@@ -103,7 +103,9 @@ One thing to be very careful about is handling interactive sessions like less, v
         .message.content
     )
 
-    adapter = TerminusAdapter(n_concurrent=args.n_concurrent, instruction_prompt_path=INSTRUCTION_PROMPT_PATH)
+    adapter = TerminusAdapter(
+        n_concurrent=args.n_concurrent, instruction_prompt_path=str(INSTRUCTION_PROMPT_PATH)
+    )
     testset_results_no_prompt = adapter.evaluate(testset, {"instruction_prompt": ""}, capture_traces=True)
     testset_results_before_opt = adapter.evaluate(
         testset,
@@ -111,11 +113,18 @@ One thing to be very careful about is handling interactive sessions like less, v
         capture_traces=True,
     )
 
+    testset_results_no_prompt_traj = testset_results_no_prompt.trajectories
+    if testset_results_no_prompt_traj is None:
+        raise ValueError("Expected trajectories when capture_traces=True for testset_results_no_prompt.")
+    testset_results_before_opt_traj = testset_results_before_opt.trajectories
+    if testset_results_before_opt_traj is None:
+        raise ValueError("Expected trajectories when capture_traces=True for testset_results_before_opt.")
+
     with open("gepa_terminus/testset_results_no_prompt.json", "w") as f:
         json.dump(
             {
-                "score": sum(trajectory["success"] for trajectory in testset_results_no_prompt.trajectories),
-                "trajectories": testset_results_no_prompt.trajectories,
+                "score": sum(trajectory["success"] for trajectory in testset_results_no_prompt_traj),
+                "trajectories": testset_results_no_prompt_traj,
             },
             f,
             indent=4,
@@ -123,8 +132,8 @@ One thing to be very careful about is handling interactive sessions like less, v
     with open("gepa_terminus/testset_results_before_opt.json", "w") as f:
         json.dump(
             {
-                "score": sum(trajectory["success"] for trajectory in testset_results_before_opt.trajectories),
-                "trajectories": testset_results_before_opt.trajectories,
+                "score": sum(trajectory["success"] for trajectory in testset_results_before_opt_traj),
+                "trajectories": testset_results_before_opt_traj,
             },
             f,
             indent=4,
@@ -150,11 +159,15 @@ One thing to be very careful about is handling interactive sessions like less, v
         capture_traces=True,
     )
 
+    testset_results_after_opt_traj = testset_results_after_opt.trajectories
+    if testset_results_after_opt_traj is None:
+        raise ValueError("Expected trajectories when capture_traces=True for testset_results_after_opt.")
+
     with open("gepa_terminus/optimized_results.json", "w") as f:
         json.dump(
             {
-                "score": sum(trajectory["success"] for trajectory in testset_results_after_opt.trajectories),
-                "trajectories": testset_results_after_opt.trajectories,
+                "score": sum(trajectory["success"] for trajectory in testset_results_after_opt_traj),
+                "trajectories": testset_results_after_opt_traj,
             },
             f,
             indent=4,

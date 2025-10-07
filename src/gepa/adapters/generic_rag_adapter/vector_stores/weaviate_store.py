@@ -262,7 +262,7 @@ class WeaviateVectorStore(VectorStoreInterface):
 
     def _format_results(self, results) -> list[dict[str, Any]]:
         """Convert Weaviate results to standardized format."""
-        documents = []
+        documents: list[dict[str, Any]] = []
 
         # Handle both GenerativeReturn objects and direct lists
         if hasattr(results, "objects"):

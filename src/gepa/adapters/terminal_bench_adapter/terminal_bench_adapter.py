@@ -3,6 +3,7 @@ import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 from terminal_bench.agents.terminus_1 import CommandBatchResponse
@@ -71,7 +72,7 @@ def run_agent_tb(
         return 1
 
 
-def get_results(task_id: str, run_id: str) -> tuple[int, list]:
+def get_results(task_id: str, run_id: str) -> tuple[bool, int, str, list[dict[str, Any]]]:
 
     def _read_episode_response(episode_dir: Path) -> CommandBatchResponse | None:
         """Helper method to read and parse response.json from an episode directory."""
@@ -115,17 +116,20 @@ def get_results(task_id: str, run_id: str) -> tuple[int, list]:
         if dir.is_dir() and dir.name.startswith("episode-"):
             episode_dirs.append(dir)
 
-    if episode_dirs:
-        # Sort by episode number to get the last one
-        episode_dirs.sort(key=lambda x: int(x.name.split("-")[1]))
-        last_episode_dir = episode_dirs[-1]
+    messages: list[dict[str, Any]] = []
+    if not episode_dirs:
+        return success, score, failed_reason, messages
+
+    # Sort by episode number to get the last one
+    episode_dirs.sort(key=lambda x: int(x.name.split("-")[1]))
+    last_episode_dir = episode_dirs[-1]
 
     last_episode_dir_trajectory = last_episode_dir / "debug.json"
     with open(last_episode_dir_trajectory) as f:
         trajectory = json.load(f)
 
         if "input" in trajectory and isinstance(trajectory["input"], list):
-            messages = trajectory["input"]
+            messages = list(trajectory["input"])
 
         # Add the last assistant response using helper method
         parsed_response = _read_episode_response(last_episode_dir)
@@ -156,9 +160,9 @@ class TerminusAdapter(GEPAAdapter):
         candidate: dict[str, str],
         capture_traces: bool = False,
     ) -> EvaluationBatch:
-        outputs = []
-        scores = []
-        trajectories = []
+        outputs: list[str] = []
+        scores: list[float] = []
+        trajectories: list[dict[str, Any]] = []
         example_run_id = "temp_gepa_run" + "_" + datetime.now().strftime("%Y%m%d%H%M%S")
         example_model_name = batch[0].model_name
 
@@ -186,7 +190,7 @@ class TerminusAdapter(GEPAAdapter):
             outputs.append(
                 f"Terminal Bench outputs are omitted. Please see runs/{example_run_id}/{example.task_id}/ for detailed logging."
             )
-            scores.append(score)
+            scores.append(float(score))
             trajectories.append(
                 {
                     "messages": messages,
@@ -207,8 +211,12 @@ class TerminusAdapter(GEPAAdapter):
         eval_batch: EvaluationBatch,
         components_to_update: list[str],
     ):
-        reflective_dataset = {"instruction_prompt": []}
-        for _score, trajectory in zip(eval_batch.scores, eval_batch.trajectories, strict=False):
+        trajectories = eval_batch.trajectories
+        if trajectories is None:
+            raise ValueError("Reflective dataset requires trajectories; call evaluate with capture_traces=True.")
+
+        reflective_dataset: dict[str, list[dict[str, Any]]] = {"instruction_prompt": []}
+        for _score, trajectory in zip(eval_batch.scores, trajectories, strict=False):
             if trajectory["success"]:
                 feedback = "Successfully solved the task!"
             else:

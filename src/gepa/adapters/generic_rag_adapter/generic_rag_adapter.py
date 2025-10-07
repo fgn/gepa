@@ -257,7 +257,7 @@ class GenericRAGAdapter(GEPAAdapter[RAGDataInst, RAGTrajectory, RAGOutput]):
         """
         outputs: list[RAGOutput] = []
         scores: list[float] = []
-        trajectories: list[RAGTrajectory] | None = [] if capture_traces else None
+        trajectories: list[RAGTrajectory] = []
 
         for data_inst in batch:
             try:
@@ -332,7 +332,11 @@ class GenericRAGAdapter(GEPAAdapter[RAGDataInst, RAGTrajectory, RAGOutput]):
                     )
                     trajectories.append(error_trajectory)
 
-        return EvaluationBatch(outputs=outputs, scores=scores, trajectories=trajectories)
+        return EvaluationBatch(
+            outputs=outputs,
+            scores=scores,
+            trajectories=trajectories if capture_traces else None,
+        )
 
     def make_reflective_dataset(
         self,
@@ -376,15 +380,17 @@ class GenericRAGAdapter(GEPAAdapter[RAGDataInst, RAGTrajectory, RAGOutput]):
             This method requires eval_batch to have been created with
             capture_traces=True, otherwise trajectories will be None.
         """
+        trajectories = eval_batch.trajectories
+        if trajectories is None:
+            raise ValueError("Reflective dataset requires trajectories; call evaluate with capture_traces=True.")
+
         reflective_data: dict[str, list[dict[str, Any]]] = {}
 
         for component in components_to_update:
             component_examples = []
 
             # Process each trajectory to create examples for this component
-            for traj, output, score in zip(
-                eval_batch.trajectories or [], eval_batch.outputs, eval_batch.scores, strict=False
-            ):
+            for traj, output, score in zip(trajectories, eval_batch.outputs, eval_batch.scores, strict=False):
                 example = self._create_component_example(component, traj, output, score, candidate)
                 if example:
                     component_examples.append(example)
@@ -442,8 +448,7 @@ class GenericRAGAdapter(GEPAAdapter[RAGDataInst, RAGTrajectory, RAGOutput]):
                 "Generated Outputs": "Document ranking applied",
                 "Feedback": self._generate_reranking_feedback(trajectory, score),
             }
-
-            return None
+        return None
 
     def _generate_query_reformulation_feedback(self, trajectory: RAGTrajectory, score: float) -> str:
         """Generate feedback for query reformulation component."""

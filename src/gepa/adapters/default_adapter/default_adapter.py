@@ -42,7 +42,7 @@ class DefaultAdapter(GEPAAdapter[DefaultDataInst, DefaultTrajectory, DefaultRoll
     ) -> EvaluationBatch[DefaultTrajectory, DefaultRolloutOutput]:
         outputs: list[DefaultRolloutOutput] = []
         scores: list[float] = []
-        trajectories: list[DefaultTrajectory] | None = [] if capture_traces else None
+        trajectories: list[DefaultTrajectory] = []
 
         system_content = next(iter(candidate.values()))
 
@@ -67,7 +67,7 @@ class DefaultAdapter(GEPAAdapter[DefaultDataInst, DefaultTrajectory, DefaultRoll
             raise e
 
         for data, assistant_response in zip(batch, responses, strict=False):
-            output = {"full_assistant_response": assistant_response}
+            output: DefaultRolloutOutput = {"full_assistant_response": assistant_response}
             score = 1.0 if data["answer"] in assistant_response else 0.0
 
             outputs.append(output)
@@ -81,7 +81,11 @@ class DefaultAdapter(GEPAAdapter[DefaultDataInst, DefaultTrajectory, DefaultRoll
                     }
                 )
 
-        return EvaluationBatch(outputs=outputs, scores=scores, trajectories=trajectories)
+        return EvaluationBatch(
+            outputs=outputs,
+            scores=scores,
+            trajectories=trajectories if capture_traces else None,
+        )
 
     def make_reflective_dataset(
         self,
@@ -94,8 +98,12 @@ class DefaultAdapter(GEPAAdapter[DefaultDataInst, DefaultTrajectory, DefaultRoll
         assert len(components_to_update) == 1
         comp = components_to_update[0]
 
+        trajectories = eval_batch.trajectories
+        if trajectories is None:
+            raise ValueError("Reflective dataset requires trajectories; call evaluate with capture_traces=True.")
+
         items: list[dict[str, Any]] = []
-        trace_instances = list(zip(eval_batch.trajectories, eval_batch.scores, eval_batch.outputs, strict=False))
+        trace_instances = list(zip(trajectories, eval_batch.scores, eval_batch.outputs, strict=False))
 
         for trace_instance in trace_instances:
             traj, score, _ = trace_instance

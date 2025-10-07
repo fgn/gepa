@@ -203,7 +203,7 @@ class MilvusVectorStore(VectorStoreInterface):
 
     def _format_results(self, results) -> list[dict[str, Any]]:
         """Convert Milvus results to standardized format."""
-        documents = []
+        documents: list[dict[str, Any]] = []
 
         # Milvus returns nested list: results[0] contains hits for first query vector
         if not results or not results[0]:
@@ -255,7 +255,7 @@ class MilvusVectorStore(VectorStoreInterface):
 
         return documents
 
-    def _convert_filters(self, filters: dict[str, Any]) -> str:
+    def _convert_filters(self, filters: dict[str, Any]) -> str | None:
         """Convert generic filters to Milvus expression format."""
         if not filters:
             return None

@@ -1,6 +1,8 @@
 # Copyright (c) 2025 Lakshya A Agrawal and the GEPA contributors
 # https://github.com/gepa-ai/gepa
 
+from typing import Any
+
 from gepa.proposer.reflective_mutation.base import Signature
 
 
@@ -27,7 +29,7 @@ Provide the new instructions within ``` blocks."""
     output_keys = ["new_instruction"]
 
     @classmethod
-    def prompt_renderer(cls, input_dict: dict[str, str]) -> str:
+    def prompt_renderer(cls, input_dict: dict[str, Any]) -> str:
         def format_samples(samples):
             def render_value(value, level=3):
                 # level controls markdown header depth (###, ####, etc.)

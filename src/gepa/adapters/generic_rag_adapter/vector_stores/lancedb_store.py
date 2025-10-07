@@ -131,6 +131,7 @@ class LanceDBVectorStore(VectorStoreInterface):
         """Delete documents by their IDs."""
         try:
             # Use parameterized filter to avoid injection
+            filter_expr: dict[str, Any]
             if len(ids) == 1:
                 filter_expr = {"id": ids[0]}
             else:
@@ -253,7 +254,7 @@ class LanceDBVectorStore(VectorStoreInterface):
 
     def _format_results(self, results_df) -> list[dict[str, Any]]:
         """Convert LanceDB results to standardized format."""
-        documents = []
+        documents: list[dict[str, Any]] = []
 
         if results_df is None or len(results_df) == 0:
             return documents
@@ -320,7 +321,7 @@ class LanceDBVectorStore(VectorStoreInterface):
 
         return documents
 
-    def _convert_filters(self, filters: dict[str, Any]) -> str:
+    def _convert_filters(self, filters: dict[str, Any]) -> str | None:
         """Convert generic filters to LanceDB SQL-like expressions."""
         if not filters:
             return None

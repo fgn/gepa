@@ -18,7 +18,7 @@ class EpochShuffledBatchSampler(BatchSampler):
         self.minibatch_size = minibatch_size
         self.shuffled_ids: list[int] = []
         self.epoch = -1
-        self.id_freqs = Counter()
+        self.id_freqs: Counter[int] = Counter()
         if rng is None:
             self.rng = random.Random(0)
         else:

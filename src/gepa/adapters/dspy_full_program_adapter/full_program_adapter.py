@@ -32,14 +32,14 @@ class DspyAdapter(GEPAAdapter[Example, TraceData, Prediction]):
 
     def build_program(self, candidate: dict[str, str]) -> tuple[dspy.Module, None] | tuple[None, str]:
         candidate_src = candidate["program"]
-        context = {}
+        context: dict[str, Any] = {}
         o = self.load_dspy_program_from_code(candidate_src, context)
         return o
 
     def load_dspy_program_from_code(
         self,
         candidate_src: str,
-        context: dict,
+        context: dict[str, Any],
     ):
         try:
             compile(candidate_src, "<string>", "exec")
