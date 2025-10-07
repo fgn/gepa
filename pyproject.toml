@@ -46,7 +46,8 @@ dev = [
     "gepa[build]",
     "pre-commit",
     "build>=1.0.3",
-    "ruff>=0.3.0"
+    "ruff>=0.3.0",
+    "mypy>=1.11.0"
 ]
 
 [project.urls]
@@ -58,6 +59,12 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = ["src"]
+packages = ["gepa"]
+ignore_missing_imports = true
 
 [tool.ruff]
 include = ["src/**/*.py"]
