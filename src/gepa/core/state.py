@@ -84,32 +84,42 @@ class GEPAState(Generic[RolloutOutput]):
 
         return True
 
-    def save(self, run_dir: str | None, checkpoint_iter: int | None = None):
+    def save(
+        self,
+        run_dir: str | None,
+        checkpoint_iter: int | None = None,
+        *,
+        use_cloudpickle: bool = False,
+    ):
         if run_dir is None:
             return
-        # Always persist the latest snapshot.
-        with open(os.path.join(run_dir, "gepa_state.bin"), "wb") as f:
-            import pickle
+        if use_cloudpickle:
+            import cloudpickle as pickle_module
+        else:
+            import pickle as pickle_module
 
-            d = dict(self.__dict__.items())
-            pickle.dump(d, f)
+        payload = dict(self.__dict__.items())
+
+        with open(os.path.join(run_dir, "gepa_state.bin"), "wb") as handle:
+            pickle_module.dump(payload, handle)
+
         if checkpoint_iter is not None:
             os.makedirs(os.path.join(run_dir, "checkpoints"), exist_ok=True)
             ckpt_path = os.path.join(run_dir, "checkpoints", f"iter_{checkpoint_iter}.bin")
-            with open(ckpt_path, "wb") as f:
-                import pickle
-
-                d = dict(self.__dict__.items())
-                pickle.dump(d, f)
+            with open(ckpt_path, "wb") as handle:
+                pickle_module.dump(payload, handle)
 
     @staticmethod
     def load(run_dir: str) -> "GEPAState":
-        with open(os.path.join(run_dir, "gepa_state.bin"), "rb") as f:
-            import pickle
+        with open(os.path.join(run_dir, "gepa_state.bin"), "rb") as handle:
+            try:
+                import cloudpickle as pickle_module
+            except ImportError:
+                import pickle as pickle_module
 
-            d = pickle.load(f)
+            data = pickle_module.load(handle)
         state = GEPAState.__new__(GEPAState)
-        state.__dict__.update(d)
+        state.__dict__.update(data)
 
         assert len(state.program_candidates) == len(state.program_full_scores_val_set)
         assert len(state.pareto_front_valset) == len(state.program_at_pareto_front_valset)
@@ -124,12 +134,15 @@ class GEPAState(Generic[RolloutOutput]):
         ckpt_path = os.path.join(run_dir, "checkpoints", f"iter_{iteration}.bin")
         if not os.path.exists(ckpt_path):
             raise FileNotFoundError(f"Checkpoint not found for iteration {iteration} at {ckpt_path}")
-        with open(ckpt_path, "rb") as f:
-            import pickle
+        with open(ckpt_path, "rb") as handle:
+            try:
+                import cloudpickle as pickle_module
+            except ImportError:
+                import pickle as pickle_module
 
-            d = pickle.load(f)
+            data = pickle_module.load(handle)
         state = GEPAState.__new__(GEPAState)
-        state.__dict__.update(d)
+        state.__dict__.update(data)
 
         assert len(state.program_candidates) == len(state.program_full_scores_val_set)
         assert len(state.pareto_front_valset) == len(state.program_at_pareto_front_valset)

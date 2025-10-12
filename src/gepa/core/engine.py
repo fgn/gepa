@@ -60,6 +60,7 @@ class GEPAEngine(Generic[DataInst, Trajectory, RolloutOutput]):
         track_best_outputs: bool = False,
         display_progress_bar: bool = False,
         raise_on_exception: bool = True,
+        use_cloudpickle: bool = False,
         # Budget and Stop Condition
         stop_callback: Callable[[Any], bool] | None = None,
     ):
@@ -97,6 +98,7 @@ class GEPAEngine(Generic[DataInst, Trajectory, RolloutOutput]):
 
         self.track_best_outputs = track_best_outputs
         self.display_progress_bar = display_progress_bar
+        self.use_cloudpickle = use_cloudpickle
 
         self.raise_on_exception = raise_on_exception
 
@@ -379,7 +381,7 @@ class GEPAEngine(Generic[DataInst, Trajectory, RolloutOutput]):
         if self._state is None:
             raise RuntimeError("GEPAEngine.close() called before start()")
 
-        self._state.save(self.run_dir)
+        self._state.save(self.run_dir, use_cloudpickle=self.use_cloudpickle)
         if self.display_progress_bar and self._progress_bar is not None:
             self._progress_bar.close()
             self._progress_bar = None
@@ -387,7 +389,7 @@ class GEPAEngine(Generic[DataInst, Trajectory, RolloutOutput]):
 
     def _finalize_iteration(self, state: GEPAState, iteration: int, pending_stop: bool | None) -> None:
         if self.run_dir is not None:
-            state.save(self.run_dir, checkpoint_iter=iteration)
+            state.save(self.run_dir, checkpoint_iter=iteration, use_cloudpickle=self.use_cloudpickle)
         snapshot = self._recorder.capture_snapshot(
             state=state,
             reflective_proposer=self.reflective_proposer,
