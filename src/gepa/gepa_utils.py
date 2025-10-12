@@ -16,23 +16,30 @@ def idxmax(lst: list[float]) -> int:
     return lst.index(max_val)
 
 
+def _dominators_for_program(y, candidate_programs, program_at_pareto_front_valset):
+    """
+    Return the set of candidate programs that co-appear with `y` on every per-test front
+    that contains `y`.
+    """
+    y_fronts = [front for front in program_at_pareto_front_valset if y in front]
+    if not y_fronts:
+        return set()
+
+    common = set(candidate_programs)
+    for front in y_fronts:
+        common &= set(front) - {y}
+        if not common:
+            break
+
+    return common
+
+
 def is_dominated(y, programs, program_at_pareto_front_valset) -> bool:
     """
     Return True iff there exists a single program q in `programs` that co-appears
     with `y` on every per-test front that contains `y`.
-
     """
-    y_fronts = [front for front in program_at_pareto_front_valset if y in front]
-    if not y_fronts:
-        return False
-
-    common = set(programs)
-    for front in y_fronts:
-        common &= set(front) - {y}
-        if not common:
-            return False
-
-    return True
+    return bool(_dominators_for_program(y, programs, program_at_pareto_front_valset))
 
 
 def remove_dominated_programs(program_at_pareto_front_valset, scores=None):
@@ -56,14 +63,8 @@ def remove_dominated_programs(program_at_pareto_front_valset, scores=None):
             if y in dominated:
                 continue
             other_programs = set(programs).difference({y}).difference(dominated)
-            if not is_dominated(y, other_programs, program_at_pareto_front_valset):
-                continue
-
-            y_fronts = [front for front in program_at_pareto_front_valset if y in front]
-            common_dominators = set(other_programs)
-            for front in y_fronts:
-                common_dominators &= set(front) - {y}
-            if not common_dominators:
+            dominators = _dominators_for_program(y, other_programs, program_at_pareto_front_valset)
+            if not dominators:
                 continue
 
             dominated.add(y)
