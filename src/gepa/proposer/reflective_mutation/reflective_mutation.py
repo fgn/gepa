@@ -4,6 +4,7 @@
 from typing import Any
 
 from gepa.core.adapter import DataInst, GEPAAdapter, RolloutOutput, Trajectory
+from gepa.core.recorder import GEPARecorder
 from gepa.core.state import GEPAState
 from gepa.proposer.base import CandidateProposal, ProposeNewCandidate
 from gepa.proposer.reflective_mutation.base import (
@@ -49,6 +50,14 @@ class ReflectiveMutationProposer(ProposeNewCandidate):
         self.skip_perfect_score = skip_perfect_score
         self.experiment_tracker = experiment_tracker
         self.reflection_lm = reflection_lm
+        self._recorder: GEPARecorder | None = None
+
+    def attach_recorder(self, recorder: GEPARecorder | None) -> None:
+        if recorder and recorder.enabled:
+            self._recorder = recorder
+            self.adapter = recorder.wrap_adapter(self.adapter)
+        else:
+            self._recorder = None
 
     def propose_new_texts(
         self,
@@ -91,7 +100,17 @@ class ReflectiveMutationProposer(ProposeNewCandidate):
         minibatch = [self.trainset[j] for j in subsample_ids]
 
         # 1) Evaluate current program with traces
-        eval_curr = self.adapter.evaluate(minibatch, curr_prog, capture_traces=True)
+        if self._recorder is not None:
+            with self._recorder.scope(
+                event="EVAL",
+                site="reflective-minibatch",
+                dataset="trainset",
+                indices=subsample_ids,
+                capture_traces=True,
+            ):
+                eval_curr = self.adapter.evaluate(minibatch, curr_prog, capture_traces=True)
+        else:
+            eval_curr = self.adapter.evaluate(minibatch, curr_prog, capture_traces=True)
         state.total_num_evals += len(subsample_ids)
         state.full_program_trace[-1]["subsample_scores"] = eval_curr.scores
 
@@ -113,7 +132,22 @@ class ReflectiveMutationProposer(ProposeNewCandidate):
         # 3) Build reflective dataset and propose texts
         try:
             reflective_dataset = self.adapter.make_reflective_dataset(curr_prog, eval_curr, predictor_names_to_update)
-            new_texts = self.propose_new_texts(curr_prog, reflective_dataset, predictor_names_to_update)
+            if self._recorder is not None and self._recorder.is_replay:
+                new_texts = self._recorder.replay_proposal(
+                    parent_prog_id=curr_prog_id,
+                    components=predictor_names_to_update,
+                    reflective_dataset=reflective_dataset,
+                )
+            else:
+                new_texts = self.propose_new_texts(curr_prog, reflective_dataset, predictor_names_to_update)
+                if self._recorder is not None:
+                    self._recorder.record_proposal(
+                        iteration=i,
+                        parent_prog_id=curr_prog_id,
+                        components=predictor_names_to_update,
+                        reflective_dataset=reflective_dataset,
+                        new_texts=new_texts,
+                    )
             for pname, text in new_texts.items():
                 self.logger.log(f"Iteration {i}: Proposed new text for {pname}: {text}")
             self.experiment_tracker.log_metrics(
@@ -132,7 +166,17 @@ class ReflectiveMutationProposer(ProposeNewCandidate):
             assert pname in new_candidate, f"{pname} missing in candidate"
             new_candidate[pname] = text
 
-        eval_new = self.adapter.evaluate(minibatch, new_candidate, capture_traces=False)
+        if self._recorder is not None:
+            with self._recorder.scope(
+                event="EVAL",
+                site="reflective-new",
+                dataset="trainset",
+                indices=subsample_ids,
+                capture_traces=False,
+            ):
+                eval_new = self.adapter.evaluate(minibatch, new_candidate, capture_traces=False)
+        else:
+            eval_new = self.adapter.evaluate(minibatch, new_candidate, capture_traces=False)
         state.total_num_evals += len(subsample_ids)
         state.full_program_trace[-1]["new_subsample_scores"] = eval_new.scores
 

@@ -23,6 +23,180 @@ from gepa.strategies.component_selector import (
 from gepa.utils import FileStopper, StopperProtocol
 
 
+def make_engine(
+    seed_candidate: dict[str, str],
+    trainset: list[DataInst],
+    valset: list[DataInst] | None = None,
+    adapter: GEPAAdapter[DataInst, Trajectory, RolloutOutput] | None = None,
+    task_lm: str | Callable | None = None,
+    # Reflection-based configuration
+    reflection_lm: LanguageModel | str | None = None,
+    candidate_selection_strategy: str = "pareto",
+    skip_perfect_score=True,
+    reflection_minibatch_size=3,
+    perfect_score=1,
+    # Component selection configuration
+    module_selector: "ReflectionComponentSelector | str" = "round_robin",
+    # Merge-based configuration
+    use_merge=False,
+    max_merge_invocations=5,
+    # Budget and Stop Condition
+    max_metric_calls=None,
+    stop_callbacks: "StopperProtocol | list[StopperProtocol] | None" = None,
+    # Logging
+    logger: LoggerProtocol | None = None,
+    run_dir: str | None = None,
+    use_wandb: bool = False,
+    wandb_api_key: str | None = None,
+    wandb_init_kwargs: dict[str, Any] | None = None,
+    use_mlflow: bool = False,
+    mlflow_tracking_uri: str | None = None,
+    mlflow_experiment_name: str | None = None,
+    track_best_outputs: bool = False,
+    display_progress_bar: bool = False,
+    # Reproducibility
+    seed: int = 0,
+    raise_on_exception: bool = True,
+) -> GEPAEngine:
+    """Build a configured GEPAEngine without running it."""
+    if adapter is None:
+        assert task_lm is not None, (
+            "Since no adapter is provided, GEPA requires a task LM to be provided. Please set the `task_lm` parameter."
+        )
+        adapter = DefaultAdapter(model=task_lm)
+    else:
+        assert task_lm is None, (
+            "Since an adapter is provided, GEPA does not require a task LM to be provided. Please set the `task_lm` parameter to None."
+        )
+
+    stop_callbacks_list = []
+    if stop_callbacks is not None:
+        if isinstance(stop_callbacks, list):
+            stop_callbacks_list.extend(stop_callbacks)
+        else:
+            stop_callbacks_list.append(stop_callbacks)
+
+    if run_dir is not None:
+        stop_file_path = os.path.join(run_dir, "gepa.stop")
+        file_stopper = FileStopper(stop_file_path)
+        stop_callbacks_list.append(file_stopper)
+
+    if max_metric_calls is not None:
+        from gepa.utils import MaxMetricCallsStopper
+
+        max_calls_stopper = MaxMetricCallsStopper(max_metric_calls)
+        stop_callbacks_list.append(max_calls_stopper)
+
+    if len(stop_callbacks_list) == 0:
+        raise ValueError(
+            "The user must provide at least one of stop_callbacks or max_metric_calls to specify a stopping condition."
+        )
+
+    if len(stop_callbacks_list) == 1:
+        stop_callback = stop_callbacks_list[0]
+    else:
+        from gepa.utils import CompositeStopper
+
+        stop_callback = CompositeStopper(*stop_callbacks_list)
+
+    if not hasattr(adapter, "propose_new_texts"):
+        assert reflection_lm is not None, (
+            f"reflection_lm was not provided. The adapter used '{adapter!s}' does not provide a propose_new_texts method, "
+            + "and hence, GEPA will use the default proposer, which requires a reflection_lm to be specified."
+        )
+
+    if isinstance(reflection_lm, str):
+        import litellm
+
+        reflection_lm_name = reflection_lm
+        reflection_lm = (
+            lambda prompt: litellm.completion(model=reflection_lm_name, messages=[{"role": "user", "content": prompt}])
+            .choices[0]
+            .message.content
+        )
+
+    if logger is None:
+        logger = StdOutLogger()
+
+    if valset is None:
+        valset = trainset
+
+    rng = random.Random(seed)
+    candidate_selector = (
+        ParetoCandidateSelector(rng=rng) if candidate_selection_strategy == "pareto" else CurrentBestCandidateSelector()
+    )
+
+    if isinstance(module_selector, str):
+        module_selector_cls = {
+            "round_robin": RoundRobinReflectionComponentSelector,
+            "all": AllReflectionComponentSelector,
+        }.get(module_selector)
+
+        assert module_selector_cls is not None, (
+            f"Unknown module_selector strategy: {module_selector}. Supported strategies: 'round_robin', 'all'"
+        )
+
+        module_selector = module_selector_cls()
+
+    batch_sampler = EpochShuffledBatchSampler(minibatch_size=reflection_minibatch_size, rng=rng)
+
+    experiment_tracker = create_experiment_tracker(
+        use_wandb=use_wandb,
+        wandb_api_key=wandb_api_key,
+        wandb_init_kwargs=wandb_init_kwargs,
+        use_mlflow=use_mlflow,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_experiment_name=mlflow_experiment_name,
+    )
+
+    reflective_proposer = ReflectiveMutationProposer(
+        logger=logger,
+        trainset=trainset,
+        adapter=adapter,
+        candidate_selector=candidate_selector,
+        module_selector=module_selector,
+        batch_sampler=batch_sampler,
+        perfect_score=perfect_score,
+        skip_perfect_score=skip_perfect_score,
+        experiment_tracker=experiment_tracker,
+        reflection_lm=reflection_lm,
+    )
+
+    def evaluator(inputs, prog):
+        eval_out = adapter.evaluate(inputs, prog, capture_traces=False)
+        return eval_out.outputs, eval_out.scores
+
+    merge_proposer = None
+    if use_merge:
+        merge_proposer = MergeProposer(
+            logger=logger,
+            valset=valset,
+            evaluator=evaluator,
+            use_merge=use_merge,
+            max_merge_invocations=max_merge_invocations,
+            rng=rng,
+        )
+
+    engine = GEPAEngine(
+        run_dir=run_dir,
+        evaluator=evaluator,
+        valset=valset,
+        seed_candidate=seed_candidate,
+        perfect_score=perfect_score,
+        seed=seed,
+        reflective_proposer=reflective_proposer,
+        merge_proposer=merge_proposer,
+        logger=logger,
+        experiment_tracker=experiment_tracker,
+        track_best_outputs=track_best_outputs,
+        display_progress_bar=display_progress_bar,
+        raise_on_exception=raise_on_exception,
+        stop_callback=stop_callback,
+    )
+
+    return engine
+
+
 def optimize(
     seed_candidate: dict[str, str],
     trainset: list[DataInst],
@@ -133,149 +307,43 @@ def optimize(
     # Reproducibility
     - seed: The seed to use for the random number generator.
     """
-    if adapter is None:
-        assert task_lm is not None, (
-            "Since no adapter is provided, GEPA requires a task LM to be provided. Please set the `task_lm` parameter."
-        )
-        adapter = DefaultAdapter(model=task_lm)
-    else:
-        assert task_lm is None, (
-            "Since an adapter is provided, GEPA does not require a task LM to be provided. Please set the `task_lm` parameter to None."
-        )
-
-    # Comprehensive stop_callback logic
-    # Convert stop_callbacks to a list if it's not already
-    stop_callbacks_list = []
-    if stop_callbacks is not None:
-        if isinstance(stop_callbacks, list):
-            stop_callbacks_list.extend(stop_callbacks)
-        else:
-            stop_callbacks_list.append(stop_callbacks)
-
-    # Add file stopper if run_dir is provided
-    if run_dir is not None:
-        stop_file_path = os.path.join(run_dir, "gepa.stop")
-        file_stopper = FileStopper(stop_file_path)
-        stop_callbacks_list.append(file_stopper)
-
-    # Add max_metric_calls stopper if provided
-    if max_metric_calls is not None:
-        from gepa.utils import MaxMetricCallsStopper
-
-        max_calls_stopper = MaxMetricCallsStopper(max_metric_calls)
-        stop_callbacks_list.append(max_calls_stopper)
-
-    # Assert that at least one stopping condition is provided
-    if len(stop_callbacks_list) == 0:
-        raise ValueError(
-            "The user must provide at least one of stop_callbacks or max_metric_calls to specify a stopping condition."
-        )
-
-    # Create composite stopper if multiple stoppers, or use single stopper
-    if len(stop_callbacks_list) == 1:
-        stop_callback = stop_callbacks_list[0]
-    else:
-        from gepa.utils import CompositeStopper
-
-        stop_callback = CompositeStopper(*stop_callbacks_list)
-
-    if not hasattr(adapter, "propose_new_texts"):
-        assert reflection_lm is not None, (
-            f"reflection_lm was not provided. The adapter used '{adapter!s}' does not provide a propose_new_texts method, "
-            + "and hence, GEPA will use the default proposer, which requires a reflection_lm to be specified."
-        )
-
-    if isinstance(reflection_lm, str):
-        import litellm
-
-        reflection_lm_name = reflection_lm
-        reflection_lm = (
-            lambda prompt: litellm.completion(model=reflection_lm_name, messages=[{"role": "user", "content": prompt}])
-            .choices[0]
-            .message.content
-        )
-
-    if logger is None:
-        logger = StdOutLogger()
-
-    if valset is None:
-        valset = trainset
-
-    rng = random.Random(seed)
-    candidate_selector = (
-        ParetoCandidateSelector(rng=rng) if candidate_selection_strategy == "pareto" else CurrentBestCandidateSelector()
-    )
-
-    if isinstance(module_selector, str):
-        module_selector_cls = {
-            "round_robin": RoundRobinReflectionComponentSelector,
-            "all": AllReflectionComponentSelector,
-        }.get(module_selector)
-
-        assert module_selector_cls is not None, (
-            f"Unknown module_selector strategy: {module_selector}. Supported strategies: 'round_robin', 'all'"
-        )
-
-        module_selector = module_selector_cls()
-
-    batch_sampler = EpochShuffledBatchSampler(minibatch_size=reflection_minibatch_size, rng=rng)
-
-    experiment_tracker = create_experiment_tracker(
+    engine = make_engine(
+        seed_candidate=seed_candidate,
+        trainset=trainset,
+        valset=valset,
+        adapter=adapter,
+        task_lm=task_lm,
+        reflection_lm=reflection_lm,
+        candidate_selection_strategy=candidate_selection_strategy,
+        skip_perfect_score=skip_perfect_score,
+        reflection_minibatch_size=reflection_minibatch_size,
+        perfect_score=perfect_score,
+        module_selector=module_selector,
+        use_merge=use_merge,
+        max_merge_invocations=max_merge_invocations,
+        max_metric_calls=max_metric_calls,
+        stop_callbacks=stop_callbacks,
+        logger=logger,
+        run_dir=run_dir,
         use_wandb=use_wandb,
         wandb_api_key=wandb_api_key,
         wandb_init_kwargs=wandb_init_kwargs,
         use_mlflow=use_mlflow,
         mlflow_tracking_uri=mlflow_tracking_uri,
         mlflow_experiment_name=mlflow_experiment_name,
-    )
-
-    reflective_proposer = ReflectiveMutationProposer(
-        logger=logger,
-        trainset=trainset,
-        adapter=adapter,
-        candidate_selector=candidate_selector,
-        module_selector=module_selector,
-        batch_sampler=batch_sampler,
-        perfect_score=perfect_score,
-        skip_perfect_score=skip_perfect_score,
-        experiment_tracker=experiment_tracker,
-        reflection_lm=reflection_lm,
-    )
-
-    def evaluator(inputs, prog):
-        eval_out = adapter.evaluate(inputs, prog, capture_traces=False)
-        return eval_out.outputs, eval_out.scores
-
-    merge_proposer = None
-    if use_merge:
-        merge_proposer = MergeProposer(
-            logger=logger,
-            valset=valset,
-            evaluator=evaluator,
-            use_merge=use_merge,
-            max_merge_invocations=max_merge_invocations,
-            rng=rng,
-        )
-
-    engine = GEPAEngine(
-        run_dir=run_dir,
-        evaluator=evaluator,
-        valset=valset,
-        seed_candidate=seed_candidate,
-        perfect_score=perfect_score,
-        seed=seed,
-        reflective_proposer=reflective_proposer,
-        merge_proposer=merge_proposer,
-        logger=logger,
-        experiment_tracker=experiment_tracker,
         track_best_outputs=track_best_outputs,
         display_progress_bar=display_progress_bar,
+        seed=seed,
         raise_on_exception=raise_on_exception,
-        stop_callback=stop_callback,
     )
 
-    with experiment_tracker:
-        state = engine.run()
+    with engine.experiment_tracker:
+        engine.start()
+        while True:
+            report = engine.step()
+            if report.done:
+                break
+        state = engine.close()
 
     result = GEPAResult.from_state(state)
     return result
