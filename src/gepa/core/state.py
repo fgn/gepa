@@ -78,32 +78,74 @@ class GEPAState(Generic[RolloutOutput]):
 
         for prog_list in self.program_at_pareto_front_valset:
             for prog_idx in prog_list:
-                assert prog_idx < len(self.program_candidates), "Program index in valset pareto front exceeds number of program candidates"
+                assert prog_idx < len(self.program_candidates), (
+                    "Program index in valset pareto front exceeds number of program candidates"
+                )
 
         return True
 
-    def save(self, run_dir: str | None, *, use_cloudpickle: bool = False):
+    def save(
+        self,
+        run_dir: str | None,
+        checkpoint_iter: int | None = None,
+        *,
+        use_cloudpickle: bool = False,
+    ):
         if run_dir is None:
             return
-        with open(os.path.join(run_dir, "gepa_state.bin"), "wb") as f:
-            if use_cloudpickle:
-                import cloudpickle as pickle
-            else:
-                import pickle
-            d = dict(self.__dict__.items())
-            pickle.dump(d, f)
+        if use_cloudpickle:
+            import cloudpickle as pickle_module
+        else:
+            import pickle as pickle_module
+
+        payload = dict(self.__dict__.items())
+
+        with open(os.path.join(run_dir, "gepa_state.bin"), "wb") as handle:
+            pickle_module.dump(payload, handle)
+
+        if checkpoint_iter is not None:
+            os.makedirs(os.path.join(run_dir, "checkpoints"), exist_ok=True)
+            ckpt_path = os.path.join(run_dir, "checkpoints", f"iter_{checkpoint_iter}.bin")
+            with open(ckpt_path, "wb") as handle:
+                pickle_module.dump(payload, handle)
 
     @staticmethod
     def load(run_dir: str) -> "GEPAState":
-        with open(os.path.join(run_dir, "gepa_state.bin"), "rb") as f:
-            import pickle
-            d = pickle.load(f)
+        with open(os.path.join(run_dir, "gepa_state.bin"), "rb") as handle:
+            try:
+                import cloudpickle as pickle_module
+            except ImportError:
+                import pickle as pickle_module
+
+            data = pickle_module.load(handle)
         state = GEPAState.__new__(GEPAState)
-        state.__dict__.update(d)
+        state.__dict__.update(data)
 
         assert len(state.program_candidates) == len(state.program_full_scores_val_set)
         assert len(state.pareto_front_valset) == len(state.program_at_pareto_front_valset)
 
+        assert len(state.program_candidates) == len(state.parent_program_for_candidate)
+        assert len(state.program_candidates) == len(state.named_predictor_id_to_update_next_for_program_candidate)
+
+        return state
+
+    @staticmethod
+    def load_checkpoint(run_dir: str, iteration: int) -> "GEPAState":
+        ckpt_path = os.path.join(run_dir, "checkpoints", f"iter_{iteration}.bin")
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f"Checkpoint not found for iteration {iteration} at {ckpt_path}")
+        with open(ckpt_path, "rb") as handle:
+            try:
+                import cloudpickle as pickle_module
+            except ImportError:
+                import pickle as pickle_module
+
+            data = pickle_module.load(handle)
+        state = GEPAState.__new__(GEPAState)
+        state.__dict__.update(data)
+
+        assert len(state.program_candidates) == len(state.program_full_scores_val_set)
+        assert len(state.pareto_front_valset) == len(state.program_at_pareto_front_valset)
         assert len(state.program_candidates) == len(state.parent_program_for_candidate)
         assert len(state.program_candidates) == len(state.named_predictor_id_to_update_next_for_program_candidate)
 
@@ -117,19 +159,23 @@ class GEPAState(Generic[RolloutOutput]):
         valset_outputs: Any,
         valset_subscores: list[float],
         run_dir: str | None,
-        num_metric_calls_by_discovery_of_new_program: int
+        num_metric_calls_by_discovery_of_new_program: int,
     ):
         new_program_idx = len(self.program_candidates)
         self.program_candidates.append(new_program)
         self.num_metric_calls_by_discovery.append(num_metric_calls_by_discovery_of_new_program)
         # Find the highest predictor id from the parent programs
-        max_predictor_id = max([self.named_predictor_id_to_update_next_for_program_candidate[p] for p in parent_program_idx])
+        max_predictor_id = max(
+            [self.named_predictor_id_to_update_next_for_program_candidate[p] for p in parent_program_idx]
+        )
         self.named_predictor_id_to_update_next_for_program_candidate.append(max_predictor_id)
         self.parent_program_for_candidate.append(list(parent_program_idx))
 
         self.prog_candidate_val_subscores.append(valset_subscores)
         self.program_full_scores_val_set.append(valset_score)
-        for task_idx, (old_score, new_score) in enumerate(zip(self.pareto_front_valset, valset_subscores, strict=False)):
+        for task_idx, (old_score, new_score) in enumerate(
+            zip(self.pareto_front_valset, valset_subscores, strict=False)
+        ):
             if new_score > old_score:
                 self.pareto_front_valset[task_idx] = new_score
                 self.program_at_pareto_front_valset[task_idx] = {new_program_idx}
@@ -138,8 +184,18 @@ class GEPAState(Generic[RolloutOutput]):
                     self.best_outputs_valset[task_idx] = [(new_program_idx, valset_outputs[task_idx])]
 
                 if run_dir is not None:
-                    os.makedirs(os.path.join(run_dir, "generated_best_outputs_valset", f"task_{task_idx}"), exist_ok=True)
-                    with open(os.path.join(run_dir, "generated_best_outputs_valset", f"task_{task_idx}", f"iter_{self.i+1}_prog_{new_program_idx}.json"), "w") as f:
+                    os.makedirs(
+                        os.path.join(run_dir, "generated_best_outputs_valset", f"task_{task_idx}"), exist_ok=True
+                    )
+                    with open(
+                        os.path.join(
+                            run_dir,
+                            "generated_best_outputs_valset",
+                            f"task_{task_idx}",
+                            f"iter_{self.i + 1}_prog_{new_program_idx}.json",
+                        ),
+                        "w",
+                    ) as f:
                         json.dump(valset_outputs[task_idx], f, indent=4, default=json_default)
             elif new_score == old_score:
                 self.program_at_pareto_front_valset[task_idx].add(new_program_idx)
@@ -154,14 +210,13 @@ class GEPAState(Generic[RolloutOutput]):
 
         return new_program_idx, linear_pareto_front_program_idx
 
-def write_eval_output_to_directory(
-    eval_out: tuple[list[RolloutOutput], list[float]],
-    output_dir: str
-):
+
+def write_eval_output_to_directory(eval_out: tuple[list[RolloutOutput], list[float]], output_dir: str):
     for task_idx, _score in enumerate(eval_out[1]):
         os.makedirs(os.path.join(output_dir, f"task_{task_idx}"), exist_ok=True)
         with open(os.path.join(output_dir, f"task_{task_idx}", f"iter_{0}_prog_0.json"), "w") as f:
             json.dump(eval_out[1][task_idx], f, indent=4, default=json_default)
+
 
 def initialize_gepa_state(
     run_dir: str | None,

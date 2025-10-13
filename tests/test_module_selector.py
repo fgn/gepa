@@ -22,7 +22,15 @@ def common_mocks():
     )
 
     mock_adapter = Mock()
-    mock_adapter.evaluate.return_value = Mock(outputs=[], scores=[])
+
+    def _eval(batch, candidate, capture_traces=False):
+        length = len(batch)
+        outputs = [Mock()] * length
+        scores = [0.0] * length
+        trajectories = [Mock()] * length if capture_traces else None
+        return Mock(outputs=outputs, scores=scores, trajectories=trajectories)
+
+    mock_adapter.evaluate.side_effect = _eval
 
     return mock_run_return, mock_adapter
 
