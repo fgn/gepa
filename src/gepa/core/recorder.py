@@ -3,8 +3,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
+import os
 import pickle
 import random
+import sys
+import time
 import warnings
 from collections import Counter
 from contextlib import contextmanager
@@ -17,6 +21,8 @@ from gepa.gepa_utils import json_default
 from gepa.utils.stop_condition import CompositeStopper, NoImprovementStopper, StopperProtocol
 
 EventType = Literal["EVAL", "PROPOSE", "STOP"]
+
+SCHEMA_VERSION = 1
 
 
 def _encode_random_state(rng: random.Random) -> str:
@@ -43,6 +49,17 @@ def _candidate_hash(candidate: Mapping[str, Any]) -> str:
 def _dataset_hash(dataset: Mapping[str, Any]) -> str:
     canon = json.dumps(dataset, sort_keys=True, default=json_default)
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def _stable_json(obj: Mapping[str, Any]) -> str:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=json_default)
+
+
+def _chain_hash(prev_hex: str, event_payload: Mapping[str, Any]) -> str:
+    sha = hashlib.sha256()
+    sha.update(prev_hex.encode("utf-8"))
+    sha.update(_stable_json(event_payload).encode("utf-8"))
+    return sha.hexdigest()
 
 
 def _fingerprint_sequence(seq: Sequence[Any], label: str) -> str:
@@ -108,7 +125,8 @@ class GEPARecorder:
     ):
         self.enabled = run_dir is not None
         self.run_dir = Path(run_dir) if run_dir is not None else None
-        self.strict_dataset_check = strict_dataset_check
+        env_strict = os.getenv("GEPA_RECORDER_STRICT", "").lower() in {"1", "true", "yes", "on"}
+        self.strict_dataset_check = strict_dataset_check or env_strict
         self.logger = logger
 
         self.mode: Literal["record", "replay"] = "record"
@@ -118,14 +136,26 @@ class GEPARecorder:
         self._current_scope: _Scope | None = None
         self.dataset_fingerprint: dict[str, str] | None = None
         self._pending_stop_from_snapshot: bool | None = None
+        self._last_chain_hash: str = "0" * 64
 
         if self.enabled:
             _ensure_dir(self.run_dir / "tape")
             self._events_path = self.run_dir / "tape" / "events.log"
             self._dataset_fingerprint_path = self.run_dir / "dataset_fingerprint.json"
+            self._manifest_path = self.run_dir / "tape" / "manifest.json"
         else:
             self._events_path = None
             self._dataset_fingerprint_path = None
+            self._manifest_path = None
+
+        if self.enabled and self._manifest_path is not None and not self._manifest_path.exists():
+            manifest = {
+                "schema_version": SCHEMA_VERSION,
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "python": sys.version.split()[0],
+                "platform": sys.platform,
+            }
+            _write_json_atomic(self._manifest_path, manifest)
 
     # --------------------------------------------------------------------- public API
     @property
@@ -477,8 +507,17 @@ class GEPARecorder:
                 outputs = list(outputs)
                 scores = list(scores)
                 trajectories = None
+            if len(outputs) != len(scores):
+                raise ValueError("Recorder invariant failed: len(outputs) != len(scores)")
+            try:
+                score_values = [float(score) for score in scores]
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Recorder invariant failed: score not convertible to float") from exc
+            if not all(math.isfinite(score) for score in score_values):
+                raise ValueError("Recorder invariant failed: non-finite score detected")
             event = {
                 "type": "EVAL",
+                "schema_version": SCHEMA_VERSION,
                 "event_metadata": {
                     "site": scope.site,
                     "dataset": scope.dataset,
@@ -528,11 +567,16 @@ class GEPARecorder:
 
     def _append_event(self, event: Mapping[str, Any]) -> None:
         event_payload = dict(event)
+        event_payload.setdefault("schema_version", SCHEMA_VERSION)
         event_payload["event_id"] = self.next_event_id
+        event_payload["chain_prev"] = self._last_chain_hash
+        payload_for_hash = {k: v for k, v in event_payload.items() if k != "chain_hash"}
+        event_payload["chain_hash"] = _chain_hash(self._last_chain_hash, payload_for_hash)
         with self._events_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event_payload, sort_keys=True))
             handle.write("\n")
         self.next_event_id += 1
+        self._last_chain_hash = event_payload["chain_hash"]
 
     def _consume_event(self, expected_type: EventType) -> dict[str, Any]:
         if not self._replay_events:
@@ -546,6 +590,7 @@ class GEPARecorder:
             )
         if event.get("event_id") != self.next_event_id:
             raise ValueError(f"Replay event id mismatch: expected {self.next_event_id}, found {event.get('event_id')}")
+        self._validate_chain(event)
         self._replay_index += 1
         self.next_event_id += 1
         return event
@@ -557,6 +602,11 @@ class GEPARecorder:
             events = [json.loads(line) for line in handle if line.strip()]
         self._replay_events = events
         self._replay_index = 0
+        self._last_chain_hash = "0" * 64
+        for ev in events:
+            self._validate_chain(ev)
+            if "chain_hash" in ev:
+                self._last_chain_hash = ev["chain_hash"]
 
     def _prepare_record_mode(self, pointer: int) -> None:
         self._pending_stop_from_snapshot = None
@@ -564,6 +614,7 @@ class GEPARecorder:
             with self._events_path.open("w", encoding="utf-8"):
                 pass
             self.next_event_id = 0
+            self._last_chain_hash = "0" * 64
             return
         with self._events_path.open("r", encoding="utf-8") as handle:
             existing = [json.loads(line) for line in handle if line.strip()]
@@ -576,7 +627,15 @@ class GEPARecorder:
                 for event in remaining:
                     handle.write(json.dumps(event, sort_keys=True))
                     handle.write("\n")
+            existing = remaining
+        else:
+            existing = existing[:pointer]
         self.next_event_id = pointer
+        self._last_chain_hash = "0" * 64
+        for ev in existing:
+            self._validate_chain(ev)
+            if "chain_hash" in ev:
+                self._last_chain_hash = ev["chain_hash"]
 
     def _prepare_replay_mode(self, pointer: int) -> None:
         self._pending_stop_from_snapshot = None
@@ -585,6 +644,16 @@ class GEPARecorder:
             raise ValueError("Pointer exceeds number of recorded events")
         self._replay_index = pointer
         self.next_event_id = pointer
+
+    def _validate_chain(self, event: Mapping[str, Any]) -> None:
+        if "chain_hash" not in event or "chain_prev" not in event:
+            return
+        prev = event.get("chain_prev", "0" * 64)
+        claimed = event.get("chain_hash")
+        payload_for_hash = {k: v for k, v in event.items() if k != "chain_hash"}
+        computed = _chain_hash(prev, payload_for_hash)
+        if claimed != computed:
+            raise ValueError("Tape chain hash mismatch: possible corruption or out-of-order append")
 
     def _restore_rng_state(
         self,
